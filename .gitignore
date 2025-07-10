@@ -1,0 +1,170 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# 项目特定文件
+# 配置文件（保留示例文件）
+config/config.ini
+config/*.ini
+!config/config.example.ini
+
+# 日志文件
+logs/
+*.log
+
+# 临时文件
+temp/
+tmp/
+.tmp/
+
+# 用户数据
+data/
+user_data/
+
+# Whisper模型缓存
+*.pt
+models/
+
+# 音频文件
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.flac
+
+# 打包文件
+dist/
+build/
+*.exe
+*.msi
+installer.nsi
+version_info.txt
+*.ico
+assets/
+
+# IDE和编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# 环境变量文件
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# API密钥和敏感信息
+api_keys.txt
+secrets.json
+credentials.json
+
+# 用户个人设置
+user_settings.json
+personal_config.ini 
