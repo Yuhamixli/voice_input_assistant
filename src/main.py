@@ -59,6 +59,9 @@ class VoiceInputAssistant:
         # 设置热键回调
         self.hotkey_manager.set_callback(self.on_hotkey_pressed)
         
+        # 启动热键监听器
+        self.hotkey_manager.start()
+        
         # 设置语音识别回调
         self.voice_recognizer.set_callback(self.on_text_recognized)
         

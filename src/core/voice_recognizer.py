@@ -115,20 +115,47 @@ class VoiceRecognizer:
     def _recognize_audio(self, audio_data: np.ndarray) -> str:
         """识别音频数据"""
         try:
+            # 音频预处理
+            audio_data = self._preprocess_audio(audio_data)
+            
             # 使用Whisper进行识别
             result = self.model.transcribe(
                 audio_data,
                 language='zh',  # 中文
-                task='transcribe'
+                task='transcribe',
+                # 优化参数
+                temperature=0.0,  # 更确定的输出
+                compression_ratio_threshold=2.4,  # 压缩率阈值
+                logprob_threshold=-1.0,  # 对数概率阈值
+                no_speech_threshold=0.6,  # 无语音阈值
+                condition_on_previous_text=False,  # 不依赖前文
+                # 提示词优化中文识别
+                initial_prompt="以下是普通话的句子。"
             )
             
             text = result['text'].strip()
-            logger.info(f"Whisper识别结果: {text}")
+            confidence = result.get('avg_logprob', 0)
+            logger.info(f"Whisper识别结果: {text} (置信度: {confidence:.3f})")
             return text
             
         except Exception as e:
             logger.error(f"Whisper识别失败: {e}")
             return ""
+    
+    def _preprocess_audio(self, audio_data: np.ndarray) -> np.ndarray:
+        """音频预处理"""
+        # 归一化音频
+        if audio_data.max() > 0:
+            audio_data = audio_data / audio_data.max()
+        
+        # 去除直流分量
+        audio_data = audio_data - audio_data.mean()
+        
+        # 简单的噪声门限
+        noise_threshold = 0.01
+        audio_data = np.where(np.abs(audio_data) < noise_threshold, 0, audio_data)
+        
+        return audio_data
             
     def _optimize_text_with_llm(self, text: str) -> str:
         """使用大模型优化文本"""
@@ -144,12 +171,17 @@ class VoiceRecognizer:
                 
             client = openai.OpenAI(api_key=api_key)
             
-            system_prompt = """你是一个专业的文本优化助手。请对用户的语音识别文本进行优化，包括：
-1. 纠正语音识别错误
+            system_prompt = """你是一个专业的中文语音识别文本优化助手。请对用户的语音识别文本进行优化，包括：
+1. 纠正语音识别错误（同音字、近音字错误）
 2. 添加合适的标点符号
-3. 规范化表达
-4. 保持原意不变
-请直接返回优化后的文本，不要添加任何解释。"""
+3. 规范化表达（口语转书面语）
+4. 处理数字和专业术语
+5. 保持原意不变
+
+注意：
+- 优先考虑中文语境和习惯表达
+- 如果原文本过于模糊或错误，保持原样
+- 只返回优化后的文本，不要添加任何解释或标记"""
             
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo",

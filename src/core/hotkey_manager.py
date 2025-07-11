@@ -106,10 +106,12 @@ class HotkeyManager:
             key_name = self._get_key_name(key)
             if key_name:
                 self.pressed_keys.add(key_name)
+                logger.debug(f"按键按下: {key_name}, 当前按键: {self.pressed_keys}")
                 
                 # 检查是否匹配热键
                 if self._is_hotkey_match() and not self.hotkey_pressed:
                     self.hotkey_pressed = True
+                    logger.debug(f"热键匹配成功: {self._get_hotkey_description()}")
                     
                     if self.hotkey_config['press_type'] == 'press':
                         self._trigger_hotkey()
@@ -138,13 +140,23 @@ class HotkeyManager:
     def _get_key_name(self, key) -> Optional[str]:
         """获取按键名称"""
         try:
+            # 处理特殊键（功能键等）
             if hasattr(key, 'name'):
-                return key.name.lower()
+                key_name = key.name.lower()
+                # 处理功能键
+                if key_name.startswith('f') and key_name[1:].isdigit():
+                    return key_name  # f1, f2, ..., f12
+                return key_name
             elif hasattr(key, 'char') and key.char:
                 return key.char.lower()
             else:
-                return str(key).lower()
-        except:
+                # 尝试从字符串表示中提取键名
+                key_str = str(key).lower()
+                if 'key.' in key_str:
+                    return key_str.split('.')[-1].replace('>', '')
+                return key_str
+        except Exception as e:
+            logger.debug(f"获取按键名称失败: {e}")
             return None
             
     def _is_hotkey_match(self) -> bool:
