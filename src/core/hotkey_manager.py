@@ -18,6 +18,7 @@ class HotkeyManager:
     
     def __init__(self):
         self.callback: Optional[Callable] = None
+        self.exit_callback: Optional[Callable] = None
         self.listener: Optional[keyboard.Listener] = None
         self.is_running = False
         
@@ -28,13 +29,25 @@ class HotkeyManager:
             'press_type': 'press'  # press, release, hold
         }
         
+        # 退出热键配置
+        self.exit_hotkey_config = {
+            'key': 'f12',  # 退出热键
+            'modifier': 'ctrl',  # Ctrl+F12
+            'press_type': 'press'
+        }
+        
         # 按键状态跟踪
         self.pressed_keys = set()
         self.hotkey_pressed = False
+        self.exit_hotkey_pressed = False
         
     def set_callback(self, callback: Callable):
         """设置热键回调函数"""
         self.callback = callback
+        
+    def set_exit_callback(self, callback: Callable):
+        """设置退出热键回调函数"""
+        self.exit_callback = callback
         
     def set_hotkey(self, key: str, modifier: Optional[str] = None, press_type: str = 'press'):
         """设置热键"""
@@ -106,7 +119,10 @@ class HotkeyManager:
             key_name = self._get_key_name(key)
             if key_name:
                 self.pressed_keys.add(key_name)
-                logger.debug(f"按键按下: {key_name}, 当前按键: {self.pressed_keys}")
+                
+                # 只对相关按键进行详细日志记录
+                if self._is_relevant_key(key_name):
+                    logger.debug(f"按键按下: {key_name}, 当前按键: {self.pressed_keys}")
                 
                 # 检查是否匹配热键
                 if self._is_hotkey_match() and not self.hotkey_pressed:
@@ -115,6 +131,14 @@ class HotkeyManager:
                     
                     if self.hotkey_config['press_type'] == 'press':
                         self._trigger_hotkey()
+                        
+                # 检查是否匹配退出热键
+                if self._is_exit_hotkey_match() and not self.exit_hotkey_pressed:
+                    self.exit_hotkey_pressed = True
+                    logger.info("退出热键被触发: Ctrl+F12")
+                    
+                    if self.exit_hotkey_config['press_type'] == 'press':
+                        self._trigger_exit_hotkey()
                         
         except Exception as e:
             logger.error(f"处理按键按下事件时发生错误: {e}")
@@ -133,6 +157,13 @@ class HotkeyManager:
                     
                     if self.hotkey_config['press_type'] == 'release':
                         self._trigger_hotkey()
+                        
+                # 检查退出热键释放
+                if self.exit_hotkey_pressed and not self._is_exit_hotkey_match():
+                    self.exit_hotkey_pressed = False
+                    
+                    if self.exit_hotkey_config['press_type'] == 'release':
+                        self._trigger_exit_hotkey()
                         
         except Exception as e:
             logger.error(f"处理按键释放事件时发生错误: {e}")
@@ -189,6 +220,57 @@ class HotkeyManager:
                 
         return True
         
+    def _is_exit_hotkey_match(self) -> bool:
+        """检查当前按键是否匹配退出热键"""
+        target_key = self.exit_hotkey_config['key']
+        target_modifier = self.exit_hotkey_config['modifier']
+        
+        # 检查主键
+        if target_key not in self.pressed_keys:
+            return False
+            
+        # 检查修饰键
+        if target_modifier:
+            modifier_keys = {
+                'ctrl': ['ctrl_l', 'ctrl_r', 'ctrl'],
+                'shift': ['shift_l', 'shift_r', 'shift'],
+                'alt': ['alt_l', 'alt_r', 'alt'],
+                'cmd': ['cmd_l', 'cmd_r', 'cmd'],
+                'win': ['cmd_l', 'cmd_r', 'cmd']
+            }
+            
+            modifier_pressed = False
+            for mod_key in modifier_keys.get(target_modifier, []):
+                if mod_key in self.pressed_keys:
+                    modifier_pressed = True
+                    break
+                    
+            if not modifier_pressed:
+                return False
+                
+        return True
+        
+    def _is_relevant_key(self, key_name: str) -> bool:
+        """判断是否是相关按键（用于减少日志噪音）"""
+        # 只关注热键相关的按键
+        relevant_keys = {
+            self.hotkey_config['key'],
+            self.exit_hotkey_config['key'],
+            'ctrl_l', 'ctrl_r', 'ctrl',
+            'shift_l', 'shift_r', 'shift', 
+            'alt_l', 'alt_r', 'alt',
+            'cmd_l', 'cmd_r', 'cmd',
+            'esc'  # 退出键
+        }
+        
+        if self.hotkey_config['modifier']:
+            relevant_keys.add(self.hotkey_config['modifier'])
+            
+        if self.exit_hotkey_config['modifier']:
+            relevant_keys.add(self.exit_hotkey_config['modifier'])
+            
+        return key_name in relevant_keys
+        
     def _trigger_hotkey(self):
         """触发热键回调"""
         if self.callback:
@@ -200,6 +282,18 @@ class HotkeyManager:
                 thread.start()
             except Exception as e:
                 logger.error(f"执行热键回调时发生错误: {e}")
+                
+    def _trigger_exit_hotkey(self):
+        """触发退出热键回调"""
+        if self.exit_callback:
+            try:
+                logger.info("程序即将退出...")
+                # 在新线程中执行回调，避免阻塞监听器
+                thread = threading.Thread(target=self.exit_callback)
+                thread.daemon = True
+                thread.start()
+            except Exception as e:
+                logger.error(f"执行退出热键回调时发生错误: {e}")
                 
     def get_pressed_keys(self) -> set:
         """获取当前按下的按键"""
