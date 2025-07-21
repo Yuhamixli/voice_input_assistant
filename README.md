@@ -31,7 +31,7 @@
 ### 方法2：源码运行
 ```bash
 # 1. 克隆项目
-git clone https://github.com/Yuhamixili/voice_input_assistant.git
+git clone https://github.com/yuhamixli/voice_input_assistant.git
 cd voice_input_assistant
 
 # 2. 安装依赖
@@ -188,7 +188,7 @@ voice_input_assistant/
 ### 开发环境设置
 ```bash
 # 克隆项目
-git clone https://github.com/Yuhamixili/voice_input_assistant.git
+git clone https://github.com/yuhamixli/voice_input_assistant.git
 
 # 创建虚拟环境
 python -m venv venv
@@ -217,7 +217,7 @@ python test_modules.py
 如果遇到问题或有建议，请：
 1. 查看 [故障排除](#-故障排除) 部分
 2. 运行优化工具进行诊断
-3. 提交 [Issue](https://github.com/Yuhamixili/voice_input_assistant/issues)
+3. 提交 [Issue](https://github.com/yuhamixli/voice_input_assistant/issues)
 
 ---
 
