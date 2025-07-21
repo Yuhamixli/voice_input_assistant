@@ -28,6 +28,7 @@ class VoiceTestThread(QThread):
         
     def run(self):
         """运行语音测试"""
+        original_callback = None
         try:
             # 设置临时回调
             original_callback = self.voice_recognizer.callback
@@ -35,7 +36,8 @@ class VoiceTestThread(QThread):
             
             def test_callback(text):
                 nonlocal result_text
-                result_text = text
+                if text.strip():  # 避免空文本
+                    result_text = text
                 
             self.voice_recognizer.set_callback(test_callback)
             self.voice_recognizer.start_recognition()
@@ -44,23 +46,25 @@ class VoiceTestThread(QThread):
             while self.voice_recognizer.is_recording:
                 self.msleep(100)
                 
-            # 恢复原回调
-            self.voice_recognizer.set_callback(original_callback)
-            
             self.finished.emit(result_text)
             
         except Exception as e:
             logger.error(f"语音测试失败: {e}")
             self.finished.emit(f"测试失败: {e}")
+        finally:
+            # 确保恢复原回调
+            if original_callback is not None:
+                self.voice_recognizer.set_callback(original_callback)
 
 
 class MainWindow(QMainWindow):
     """主窗口"""
     
-    def __init__(self, config_manager, voice_recognizer):
+    def __init__(self, config_manager, voice_recognizer, assistant=None):
         super().__init__()
         self.config = config_manager
         self.voice_recognizer = voice_recognizer
+        self.assistant = assistant  # 添加assistant引用
         
         self.init_ui()
         self.load_settings()
@@ -131,7 +135,7 @@ class MainWindow(QMainWindow):
         
         model_layout.addWidget(QLabel("Whisper模型:"), 0, 0)
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["tiny", "base", "small", "medium", "large"])
+        self.model_combo.addItems(["tiny", "base", "small", "medium", "large", "turbo"])
         model_layout.addWidget(self.model_combo, 0, 1)
         
         model_layout.addWidget(QLabel("语言:"), 1, 0)
@@ -145,7 +149,7 @@ class MainWindow(QMainWindow):
         record_group = QGroupBox("录音设置")
         record_layout = QGridLayout(record_group)
         
-        record_layout.addWidget(QLabel("录音时长(秒):"), 0, 0)
+        record_layout.addWidget(QLabel("手动录音时长(秒):"), 0, 0)
         self.duration_spin = QSpinBox()
         self.duration_spin.setRange(1, 30)
         self.duration_spin.setValue(5)
@@ -163,6 +167,49 @@ class MainWindow(QMainWindow):
         record_layout.addWidget(self.auto_stop_check, 3, 0, 1, 2)
         
         layout.addWidget(record_group)
+        
+        # 连续识别设置
+        continuous_group = QGroupBox("连续识别设置")
+        continuous_layout = QGridLayout(continuous_group)
+        
+        continuous_layout.addWidget(QLabel("语音检测阈值:"), 0, 0)
+        self.vad_threshold_slider = QSlider(Qt.Horizontal)
+        self.vad_threshold_slider.setRange(5, 50)  # 0.005 到 0.050
+        self.vad_threshold_slider.setValue(20)  # 默认 0.020
+        continuous_layout.addWidget(self.vad_threshold_slider, 0, 1)
+        
+        self.vad_threshold_label = QLabel("0.020")
+        continuous_layout.addWidget(self.vad_threshold_label, 0, 2)
+        
+        continuous_layout.addWidget(QLabel("连续录音时长(秒):"), 1, 0)
+        self.auto_duration_spin = QSpinBox()
+        self.auto_duration_spin.setRange(1, 10)
+        self.auto_duration_spin.setValue(3)  # 默认3秒
+        self.auto_duration_spin.setSingleStep(1)
+        continuous_layout.addWidget(self.auto_duration_spin, 1, 1)
+        
+        continuous_layout.addWidget(QLabel("录音间隔时间(秒):"), 2, 0)
+        self.cooldown_spin = QSpinBox()
+        self.cooldown_spin.setRange(0, 5)
+        self.cooldown_spin.setValue(1)  # 默认1秒
+        self.cooldown_spin.setSingleStep(1)
+        continuous_layout.addWidget(self.cooldown_spin, 2, 1)
+        
+        # 动态录音开关
+        self.dynamic_recording_check = QCheckBox("启用智能动态录音")
+        self.dynamic_recording_check.setChecked(True)  # 默认启用
+        continuous_layout.addWidget(self.dynamic_recording_check, 3, 0, 1, 2)
+        
+        # 添加说明文字
+        help_label = QLabel("语音检测阈值：数值越小越敏感，但可能误触发")
+        help_label.setStyleSheet("color: #666; font-size: 11px;")
+        continuous_layout.addWidget(help_label, 4, 0, 1, 3)
+        
+        dynamic_help_label = QLabel("智能动态录音：根据语音长度自动调整录音时间（2秒说话录2秒，5秒说话录5秒）")
+        dynamic_help_label.setStyleSheet("color: #666; font-size: 11px;")
+        continuous_layout.addWidget(dynamic_help_label, 5, 0, 1, 3)
+        
+        layout.addWidget(continuous_group)
         
         # 高级设置
         advanced_group = QGroupBox("高级设置")
@@ -188,6 +235,10 @@ class MainWindow(QMainWindow):
         # 连接信号
         self.silence_threshold_slider.valueChanged.connect(
             lambda v: self.silence_threshold_label.setText(f"{v/100:.2f}")
+        )
+        
+        self.vad_threshold_slider.valueChanged.connect(
+            lambda v: self.vad_threshold_label.setText(f"{v/1000:.3f}")
         )
         
         layout.addStretch()
@@ -541,6 +592,29 @@ class MainWindow(QMainWindow):
             self.noise_reduction_check.setChecked(self.config.get('voice_recognition', 'noise_reduction', fallback=True))
             self.auto_stop_check.setChecked(self.config.get('voice_recognition', 'auto_stop', fallback=True))
             
+            # 连续识别设置
+            vad_threshold = float(self.config.get('voice_recognition', 'vad_threshold', fallback=0.020))
+            self.vad_threshold_slider.setValue(int(vad_threshold * 1000))
+            self.vad_threshold_label.setText(f"{vad_threshold:.3f}")
+            
+            auto_duration = float(self.config.get('voice_recognition', 'auto_recording_duration', fallback=2.5))
+            self.auto_duration_spin.setValue(int(auto_duration))
+            
+            cooldown_time = float(self.config.get('voice_recognition', 'cooldown_time', fallback=0.3))
+            self.cooldown_spin.setValue(int(cooldown_time))
+            
+            # 动态录音设置
+            dynamic_recording = self.config.get('voice_recognition', 'dynamic_recording', fallback=True)
+            self.dynamic_recording_check.setChecked(dynamic_recording)
+            
+            # 高级设置
+            silence_threshold = float(self.config.get('voice_recognition', 'silence_threshold', fallback=0.01))
+            self.silence_threshold_slider.setValue(int(silence_threshold * 100))
+            self.silence_threshold_label.setText(f"{silence_threshold:.2f}")
+            
+            min_length = float(self.config.get('voice_recognition', 'min_recording_length', fallback=0.5))
+            self.min_length_spin.setValue(int(min_length))
+            
             # 热键设置
             self.start_hotkey_edit.setText(self.config.get('hotkeys', 'start_recording', fallback='f9'))
             self.stop_hotkey_edit.setText(self.config.get('hotkeys', 'stop_recording', fallback='f10'))
@@ -594,6 +668,16 @@ class MainWindow(QMainWindow):
             self.config.set('voice_recognition', 'noise_reduction', str(self.noise_reduction_check.isChecked()))
             self.config.set('voice_recognition', 'auto_stop', str(self.auto_stop_check.isChecked()))
             
+            # 连续识别设置
+            self.config.set('voice_recognition', 'vad_threshold', str(self.vad_threshold_slider.value() / 1000))
+            self.config.set('voice_recognition', 'auto_recording_duration', str(self.auto_duration_spin.value()))
+            self.config.set('voice_recognition', 'cooldown_time', str(self.cooldown_spin.value()))
+            self.config.set('voice_recognition', 'dynamic_recording', str(self.dynamic_recording_check.isChecked()))
+            
+            # 高级设置
+            self.config.set('voice_recognition', 'silence_threshold', str(self.silence_threshold_slider.value() / 100))
+            self.config.set('voice_recognition', 'min_recording_length', str(self.min_length_spin.value()))
+            
             # 热键设置
             self.config.set('hotkeys', 'start_recording', self.start_hotkey_edit.text())
             self.config.set('hotkeys', 'stop_recording', self.stop_hotkey_edit.text())
@@ -630,10 +714,14 @@ class MainWindow(QMainWindow):
             # 保存配置文件
             self.config.save_config()
             
+            # 重新加载语音识别配置（立即生效）
+            if self.assistant:
+                self.assistant.reload_voice_config()
+            
             logger.info("设置已保存")
             self.status_bar.showMessage("设置已保存")
             
-            QMessageBox.information(self, "成功", "设置已保存！")
+            QMessageBox.information(self, "成功", "设置已保存并生效！")
             
         except Exception as e:
             logger.error(f"保存设置失败: {e}")

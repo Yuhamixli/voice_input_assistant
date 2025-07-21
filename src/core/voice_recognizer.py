@@ -14,12 +14,26 @@ from pathlib import Path
 import tempfile
 import wave
 import os
+from collections import deque
+
+try:
+    import scipy.signal
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
 
 try:
     import openai
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
+
+# 导入本地标点符号处理器
+try:
+    from .punctuation_processor import punctuation_processor
+    LOCAL_PUNCTUATION_AVAILABLE = True
+except ImportError:
+    LOCAL_PUNCTUATION_AVAILABLE = False
 
 
 class VoiceRecognizer:
@@ -38,16 +52,111 @@ class VoiceRecognizer:
         self.chunk_size = 1024
         self.max_recording_time = 30  # 最大录音时间（秒）
         
+        # 音频设备配置
+        self.input_device_id = None
+        self._setup_audio_device()
+        
         # 初始化模型
         self.load_model()
+        
+    def _setup_audio_device(self):
+        """设置音频设备"""
+        try:
+            # 获取可用的输入设备
+            devices = sd.query_devices()
+            input_devices = [i for i, d in enumerate(devices) if d['max_input_channels'] > 0]
+            
+            if not input_devices:
+                logger.error("未找到可用的录音设备")
+                return
+                
+            # 尝试使用配置中指定的设备
+            configured_device = self.config.get('voice_recognition', 'input_device_id', fallback=None)
+            if configured_device is not None:
+                try:
+                    configured_device = int(configured_device)
+                    if configured_device in input_devices:
+                        self.input_device_id = configured_device
+                        logger.info(f"使用配置的录音设备: {configured_device}")
+                        return
+                    else:
+                        logger.warning(f"配置的设备ID {configured_device} 不可用")
+                except ValueError:
+                    logger.warning(f"配置的设备ID格式错误: {configured_device}")
+            
+            # 使用默认设备
+            try:
+                default_device = sd.default.device
+                if isinstance(default_device, tuple):
+                    default_input_device = default_device[0]
+                else:
+                    default_input_device = default_device
+                    
+                if default_input_device in input_devices:
+                    self.input_device_id = default_input_device
+                    logger.info(f"使用默认录音设备: {default_input_device}")
+                    return
+            except Exception as e:
+                logger.warning(f"获取默认设备失败: {e}")
+            
+            # 使用第一个可用的输入设备
+            self.input_device_id = input_devices[0]
+            logger.info(f"使用第一个可用的录音设备: {self.input_device_id}")
+            
+        except Exception as e:
+            logger.error(f"设置音频设备失败: {e}")
+            self.input_device_id = None
         
     def load_model(self):
         """加载Whisper模型"""
         try:
-            model_name = self.config.get('voice_recognition', 'model', fallback='base')
+            # 优先使用tiny模型以提高速度
+            model_name = self.config.get('voice_recognition', 'model', fallback='tiny')
             logger.info(f"正在加载Whisper模型: {model_name}")
-            self.model = whisper.load_model(model_name)
-            logger.info("Whisper模型加载成功")
+            
+            # 设置模型存储路径到项目根目录
+            project_root = Path(__file__).parent.parent.parent
+            models_dir = project_root / "models"
+            models_dir.mkdir(exist_ok=True)
+            
+            # 设置WHISPER_CACHE_DIR环境变量（优先使用环境变量方式）
+            os.environ['WHISPER_CACHE_DIR'] = str(models_dir)
+            
+            # 检查模型文件是否已存在（映射实际文件名）
+            model_filename_map = {
+                'tiny': 'tiny.pt',
+                'base': 'base.pt', 
+                'small': 'small.pt',
+                'medium': 'medium.pt',
+                'large': 'large-v3.pt',
+                'turbo': 'large-v3-turbo.pt'
+            }
+            
+            actual_filename = model_filename_map.get(model_name, f"{model_name}.pt")
+            model_path = models_dir / actual_filename
+            model_exists = model_path.exists()
+            
+            if model_exists:
+                logger.info(f"发现已存在的模型文件: {model_path}")
+                logger.info(f"正在加载本地Whisper模型: {model_name}")
+            else:
+                logger.info(f"模型文件不存在，开始下载到: {models_dir}")
+                logger.info(f"正在下载Whisper模型: {model_name} (约800MB，请稍候...)")
+            
+            # 加载模型（优先使用本地文件，避免重复下载）
+            if model_exists:
+                # 直接从本地文件加载，避免网络检查
+                self.model = whisper.load_model(str(model_path))
+            else:
+                # 使用download_root参数确保下载到指定目录
+                self.model = whisper.load_model(model_name, download_root=str(models_dir))
+            
+            if model_exists:
+                logger.info(f"✅ 本地Whisper模型加载成功: {model_name}")
+            else:
+                logger.info(f"✅ Whisper模型下载并加载成功: {model_name}")
+                logger.info(f"📁 模型已保存到: {models_dir}")
+            
         except Exception as e:
             logger.error(f"加载Whisper模型失败: {e}")
             raise
@@ -78,6 +187,11 @@ class VoiceRecognizer:
         try:
             logger.info("开始录音...")
             
+            # 检查音频设备
+            if self.input_device_id is None:
+                logger.error("未配置可用的录音设备")
+                return
+            
             # 录音参数
             duration = self.config.get('voice_recognition', 'duration', fallback=5)
             
@@ -86,7 +200,8 @@ class VoiceRecognizer:
                 int(duration * self.sample_rate),
                 samplerate=self.sample_rate,
                 channels=self.channels,
-                dtype=np.float32
+                dtype=np.float32,
+                device=self.input_device_id
             )
             
             # 等待录音完成
@@ -115,48 +230,68 @@ class VoiceRecognizer:
     def _recognize_audio(self, audio_data: np.ndarray) -> str:
         """识别音频数据"""
         try:
-            # 音频预处理
-            audio_data = self._preprocess_audio(audio_data)
+            # 快速音频预处理
+            audio_data = self._preprocess_audio_fast(audio_data)
             
-            # 使用Whisper进行识别
+            # 使用Whisper进行识别，优化参数提高速度
             result = self.model.transcribe(
                 audio_data,
                 language='zh',  # 中文
                 task='transcribe',
-                # 优化参数
-                temperature=0.0,  # 更确定的输出
-                compression_ratio_threshold=2.4,  # 压缩率阈值
-                logprob_threshold=-1.0,  # 对数概率阈值
-                no_speech_threshold=0.6,  # 无语音阈值
-                condition_on_previous_text=False,  # 不依赖前文
-                # 提示词优化中文识别
-                initial_prompt="以下是普通话的句子。"
+                temperature=0.0,  # 降低随机性
+                compression_ratio_threshold=2.0,  # 较低的压缩比阈值
+                logprob_threshold=-0.8,  # 较低的概率阈值
+                no_speech_threshold=0.3,  # 较低的无语音阈值
+                fp16=False,  # 禁用FP16以避免某些设备的兼容性问题
+                beam_size=1,  # 使用贪心搜索提高速度
+                best_of=1,  # 只生成一个候选
+                condition_on_previous_text=False,  # 不依赖之前的文本
+                word_timestamps=False  # 不生成词级时间戳
             )
             
-            text = result['text'].strip()
-            confidence = result.get('avg_logprob', 0)
-            logger.info(f"Whisper识别结果: {text} (置信度: {confidence:.3f})")
-            return text
+            text = result.get('text', '').strip()
             
+            if text:
+                logger.info(f"识别结果: {text}")
+                return text
+            else:
+                logger.warning("未识别到有效文本")
+                return ""
+                
         except Exception as e:
-            logger.error(f"Whisper识别失败: {e}")
+            logger.error(f"音频识别失败: {e}")
             return ""
-    
-    def _preprocess_audio(self, audio_data: np.ndarray) -> np.ndarray:
-        """音频预处理"""
-        # 归一化音频
-        if audio_data.max() > 0:
-            audio_data = audio_data / audio_data.max()
+            
+    def _preprocess_audio_fast(self, audio_data: np.ndarray) -> np.ndarray:
+        """快速音频预处理，减少延迟"""
+        
+        # 检查音频有效性
+        if len(audio_data) == 0 or np.all(audio_data == 0):
+            logger.warning("音频数据为空或全零")
+            return np.zeros(self.sample_rate, dtype=np.float32)  # 返回1秒的静音
         
         # 去除直流分量
         audio_data = audio_data - audio_data.mean()
         
-        # 简单的噪声门限
-        noise_threshold = 0.01
-        audio_data = np.where(np.abs(audio_data) < noise_threshold, 0, audio_data)
+        # 检查音频质量
+        rms = np.sqrt(np.mean(audio_data ** 2))
+        max_amplitude = np.max(np.abs(audio_data))
+        
+        logger.debug(f"音频预处理 - RMS: {rms:.4f}, Max: {max_amplitude:.4f}, 长度: {len(audio_data)/self.sample_rate:.2f}秒")
+        
+        # 归一化
+        if max_amplitude > 0:
+            audio_data = audio_data * (0.6 / max_amplitude)
+        
+        # 简单的噪声检测
+        if rms < 0.001:
+            logger.warning(f"音频能量过低 (RMS: {rms:.6f})，可能是静音或音量太小")
+        
+        # 确保数据类型为float32
+        audio_data = audio_data.astype(np.float32)
         
         return audio_data
-            
+
     def _optimize_text_with_llm(self, text: str) -> str:
         """使用大模型优化文本"""
         if not OPENAI_AVAILABLE:
@@ -200,6 +335,23 @@ class VoiceRecognizer:
         except Exception as e:
             logger.error(f"大模型优化失败: {e}")
             return text
+    
+    def _add_local_punctuation(self, text: str) -> str:
+        """使用本地处理器添加标点符号"""
+        try:
+            original_text = text
+            processed_text = punctuation_processor.process(text)
+            
+            if processed_text != original_text:
+                logger.info(f"本地标点处理: {original_text} → {processed_text}")
+            else:
+                logger.debug(f"本地标点处理: 文本无变化")
+                
+            return processed_text
+            
+        except Exception as e:
+            logger.error(f"本地标点处理失败: {e}")
+            return text
             
     def stop(self):
         """停止语音识别器"""
@@ -208,77 +360,234 @@ class VoiceRecognizer:
 
 
 class ContinuousVoiceRecognizer(VoiceRecognizer):
-    """连续语音识别器"""
+    """连续语音识别器 - 基于工作正常的基础识别器改进"""
     
     def __init__(self, config):
         super().__init__(config)
-        self.vad_threshold = 0.01  # 语音活动检测阈值
-        self.silence_duration = 1.0  # 静音持续时间（秒）
+        # 保存配置引用以便热重载
+        self.config = config
+        self._load_continuous_params()
+        
+        # 状态变量
+        self.is_monitoring = False
+        self.is_auto_recording = False
+        self.last_activity_time = 0
+        self.debug_counter = 0
+        
+    def _load_continuous_params(self):
+        """加载连续识别参数"""
+        self.vad_threshold = float(self.config.get('voice_recognition', 'vad_threshold', fallback=0.020))
+        self.auto_recording_duration = float(self.config.get('voice_recognition', 'auto_recording_duration', fallback=2.5))
+        self.cooldown_time = float(self.config.get('voice_recognition', 'cooldown_time', fallback=0.3))
+        
+        # 动态录音参数
+        self.dynamic_recording = self.config.get('voice_recognition', 'dynamic_recording', fallback=True)
+        self.min_recording_duration = 0.5  # 最小录音时长
+        self.max_recording_duration = min(self.auto_recording_duration, 10.0)  # 最大录音时长
+        self.silence_duration_to_stop = 0.8  # 静音多久后停止录音
+        
+        logger.info(f"连续识别参数 - VAD阈值: {self.vad_threshold:.3f}, 动态录音: {self.dynamic_recording}")
+        if self.dynamic_recording:
+            logger.info(f"智能动态录音 - 范围: {self.min_recording_duration}-{self.max_recording_duration}秒, 静音停止: {self.silence_duration_to_stop}秒")
+        else:
+            logger.info(f"固定时长录音 - 时长: {self.auto_recording_duration}秒")
+        
+    def reload_config(self):
+        """重新加载配置参数"""
+        logger.info("重新加载连续识别配置...")
+        self._load_continuous_params()
+        logger.info("配置重载完成")
         
     def start_continuous_recognition(self):
-        """开始连续语音识别"""
-        if self.is_recording:
+        """开始连续监听模式"""
+        if self.is_monitoring:
+            logger.warning("连续监听已在运行中")
             return
             
-        self.is_recording = True
-        self.recording_thread = threading.Thread(target=self._continuous_record_and_recognize)
+        self.is_monitoring = True
+        self.recording_thread = threading.Thread(target=self._continuous_monitor)
         self.recording_thread.daemon = True
         self.recording_thread.start()
+        logger.info("✅ 连续语音监听已启动")
         
-    def _continuous_record_and_recognize(self):
-        """连续录音并识别"""
-        logger.info("开始连续语音识别...")
+    def stop_recognition(self):
+        """停止连续监听"""
+        self.is_monitoring = False
+        self.is_auto_recording = False
+        if self.recording_thread and self.recording_thread.is_alive():
+            self.recording_thread.join(timeout=1)
+        logger.info("连续语音监听已停止")
         
-        audio_buffer = []
-        silence_start = None
+    def _continuous_monitor(self):
+        """连续监听模式"""
+        chunk_size = 1024
+        sample_rate = self.sample_rate
         
         def audio_callback(indata, frames, time, status):
             if status:
-                logger.warning(f"音频输入状态: {status}")
+                return
                 
             # 计算音频能量
-            energy = np.sqrt(np.mean(indata ** 2))
+            audio_chunk = indata[:, 0]
+            energy = np.sqrt(np.mean(audio_chunk ** 2))
             
+            # 定期显示监听状态
+            self.debug_counter += 1
+            if self.debug_counter % 100 == 0:  # 每100个chunk显示一次
+                logger.debug(f"监听中... 当前能量: {energy:.4f}, 阈值: {self.vad_threshold:.4f}")
+            
+            # 检测语音活动
             if energy > self.vad_threshold:
-                # 检测到语音
-                audio_buffer.extend(indata[:, 0])
-                silence_start = None
-            else:
-                # 静音
-                if silence_start is None:
-                    silence_start = time.inputBufferAdcTime
-                elif time.inputBufferAdcTime - silence_start > self.silence_duration:
-                    # 静音持续时间超过阈值，处理缓冲区中的音频
-                    if len(audio_buffer) > 0:
-                        self._process_audio_buffer(np.array(audio_buffer))
-                        audio_buffer.clear()
-                    silence_start = None
+                self.last_activity_time = time.inputBufferAdcTime
+                
+                # 如果检测到语音且当前没有录音，开始录音
+                if not self.is_auto_recording and not self.is_recording:
+                    self.is_auto_recording = True
+                    logger.info(f"🎤 检测到语音 (能量: {energy:.4f})，开始录音...")
+                    
+                    # 在新线程中开始录音识别
+                    threading.Thread(
+                        target=self._auto_record_and_recognize,
+                        daemon=True
+                    ).start()
                     
         try:
             with sd.InputStream(
                 callback=audio_callback,
-                samplerate=self.sample_rate,
+                samplerate=sample_rate,
                 channels=1,
-                dtype=np.float32
+                dtype=np.float32,
+                device=self.input_device_id,
+                blocksize=chunk_size
             ):
-                while self.is_recording:
+                while self.is_monitoring:
                     time.sleep(0.1)
                     
         except Exception as e:
-            logger.error(f"连续语音识别过程中发生错误: {e}")
+            logger.error(f"连续监听出错: {e}")
         finally:
-            self.is_recording = False
+            self.is_monitoring = False
             
-    def _process_audio_buffer(self, audio_data: np.ndarray):
-        """处理音频缓冲区"""
-        if len(audio_data) < self.sample_rate * 0.5:  # 少于0.5秒的音频忽略
-            return
-            
+    def _auto_record_and_recognize(self):
+        """智能动态录音并识别"""
         try:
+            # 检查音频设备
+            if self.input_device_id is None:
+                logger.error("未配置可用的录音设备")
+                return
+            
+            if self.dynamic_recording:
+                # 使用动态录音
+                audio_data = self._dynamic_record()
+            else:
+                # 使用固定时长录音（向后兼容）
+                audio_data = self._fixed_duration_record()
+            
+            if audio_data is None or len(audio_data) == 0:
+                logger.warning("录音数据为空，跳过识别")
+                return
+                
+            if not self.is_monitoring:
+                return
+                
+            logger.info("⚡ 录音完成，开始识别...")
+            
+            # 语音识别
             text = self._recognize_audio(audio_data)
+            
             if text and self.callback:
+                # 文本优化：大模型 > 本地标点处理器 > 原始文本
                 if self.config.get('llm_optimization', 'enabled', fallback=False):
                     text = self._optimize_text_with_llm(text)
+                elif LOCAL_PUNCTUATION_AVAILABLE:
+                    text = self._add_local_punctuation(text)
+                    
                 self.callback(text)
+                
         except Exception as e:
-            logger.error(f"处理音频缓冲区时发生错误: {e}") 
+            logger.error(f"自动录音识别过程中发生错误: {e}")
+        finally:
+            self.is_auto_recording = False
+            # 等待一小段时间再允许下次录音
+            time.sleep(self.cooldown_time)
+    
+    def _dynamic_record(self):
+        """动态时长录音：根据语音活动自动确定录音长度"""
+        logger.info("🎙️ 开始动态录音...")
+        
+        # 录音缓冲区
+        audio_buffer = []
+        chunk_size = 1024
+        chunk_duration = chunk_size / self.sample_rate
+        
+        # 状态变量
+        recording_time = 0.0
+        silence_time = 0.0
+        
+        try:
+            with sd.InputStream(
+                samplerate=self.sample_rate,
+                channels=self.channels,
+                dtype=np.float32,
+                device=self.input_device_id,
+                blocksize=chunk_size
+            ) as stream:
+                
+                while recording_time < self.max_recording_duration and self.is_monitoring:
+                    # 读取音频块
+                    audio_chunk, overflowed = stream.read(chunk_size)
+                    if overflowed:
+                        logger.debug("音频缓冲区溢出")
+                    
+                    # 添加到缓冲区
+                    audio_buffer.append(audio_chunk.flatten())
+                    recording_time += chunk_duration
+                    
+                    # 计算当前块的能量
+                    energy = np.sqrt(np.mean(audio_chunk.flatten() ** 2))
+                    
+                    # 判断是否为静音
+                    if energy < self.vad_threshold * 0.3:  # 静音阈值更严格
+                        silence_time += chunk_duration
+                    else:
+                        silence_time = 0.0  # 重置静音计时
+                    
+                    # 提前停止条件
+                    if (recording_time >= self.min_recording_duration and 
+                        silence_time >= self.silence_duration_to_stop):
+                        logger.info(f"🔇 检测到静音 {silence_time:.1f}秒，提前结束录音")
+                        break
+                        
+                    # 每0.5秒显示一次状态
+                    if int(recording_time * 2) != int((recording_time - chunk_duration) * 2):
+                        logger.debug(f"录音中... {recording_time:.1f}s, 能量: {energy:.4f}, 静音: {silence_time:.1f}s")
+        
+        except Exception as e:
+            logger.error(f"动态录音过程中出错: {e}")
+            return None
+        
+        # 合并音频数据
+        if audio_buffer:
+            audio_data = np.concatenate(audio_buffer)
+            logger.info(f"✅ 动态录音完成，实际时长: {recording_time:.1f}秒")
+            return audio_data
+        else:
+            logger.warning("录音缓冲区为空")
+            return None
+    
+    def _fixed_duration_record(self):
+        """固定时长录音：向后兼容的录音方式"""
+        duration_samples = int(self.auto_recording_duration * self.sample_rate)
+        logger.debug(f"固定录音 - 时长: {self.auto_recording_duration}秒, 样本数: {duration_samples}")
+        
+        audio_data = sd.rec(
+            duration_samples,
+            samplerate=self.sample_rate,
+            channels=self.channels,
+            dtype=np.float32,
+            device=self.input_device_id
+        )
+        
+        # 等待录音完成
+        sd.wait()
+        return audio_data.flatten() 

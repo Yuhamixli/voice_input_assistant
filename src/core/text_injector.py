@@ -10,6 +10,7 @@ import pyautogui
 import win32api
 import win32con
 import win32gui
+import win32process
 import win32clipboard
 from loguru import logger
 import psutil
@@ -20,8 +21,8 @@ class TextInjector:
     
     def __init__(self):
         # 设置pyautogui参数
-        pyautogui.FAILSAFE = True
-        pyautogui.PAUSE = 0.1
+        pyautogui.FAILSAFE = False  # 禁用安全机制，避免意外触发
+        pyautogui.PAUSE = 0.05  # 减少延迟提升响应速度
         
         # 输入方式配置
         self.input_methods = {
@@ -47,6 +48,9 @@ class TextInjector:
             active_window = self._get_active_window_info()
             logger.info(f"当前活动窗口: {active_window}")
             
+            # 添加短暂延迟，避免与系统操作冲突
+            time.sleep(0.1)
+            
             # 选择合适的输入方法
             if method in self.input_methods:
                 self.input_methods[method](text)
@@ -57,7 +61,7 @@ class TextInjector:
             logger.info("文字输入完成")
             
         except Exception as e:
-            logger.error(f"输入文字时发生错误: {e}")
+            logger.warning(f"主要输入方式失败: {e}")
             # 尝试使用备用方法
             self._inject_fallback(text)
             
@@ -68,7 +72,7 @@ class TextInjector:
             window_title = win32gui.GetWindowText(hwnd)
             
             # 获取窗口所属进程
-            _, pid = win32gui.GetWindowThreadProcessId(hwnd)
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
             process_name = ""
             
             try:
@@ -145,21 +149,25 @@ class TextInjector:
         try:
             logger.info("尝试使用备用输入方法")
             
-            # 尝试不同的输入方法
-            for method_name, method_func in self.input_methods.items():
-                if method_name != self.default_method:
+            # 按优先级尝试不同的输入方法
+            backup_methods = ['sendkeys', 'typing', 'clipboard']
+            
+            for method_name in backup_methods:
+                if method_name != self.default_method and method_name in self.input_methods:
                     try:
-                        method_func(text)
-                        logger.info(f"备用方法 {method_name} 成功")
+                        logger.info(f"尝试备用方法: {method_name}")
+                        time.sleep(0.2)  # 额外延迟确保系统准备就绪
+                        self.input_methods[method_name](text)
+                        logger.info(f"✅ 备用方法 {method_name} 成功")
                         return
                     except Exception as e:
-                        logger.warning(f"备用方法 {method_name} 失败: {e}")
+                        logger.warning(f"❌ 备用方法 {method_name} 失败: {e}")
                         continue
                         
-            logger.error("所有输入方法都失败了")
+            logger.error("❌ 所有输入方法都失败了")
             
         except Exception as e:
-            logger.error(f"备用输入方法失败: {e}")
+            logger.error(f"备用输入方法执行失败: {e}")
             
     def _get_clipboard_text(self) -> Optional[str]:
         """获取剪贴板文本"""
