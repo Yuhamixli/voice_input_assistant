@@ -139,27 +139,40 @@ class VoiceRecognizer:
             if model_exists:
                 logger.info(f"发现已存在的模型文件: {model_path}")
                 logger.info(f"正在加载本地Whisper模型: {model_name}")
-            else:
-                logger.info(f"模型文件不存在，开始下载到: {models_dir}")
-                logger.info(f"正在下载Whisper模型: {model_name} (约800MB，请稍候...)")
-            
-            # 加载模型（优先使用本地文件，避免重复下载）
-            if model_exists:
-                # 直接从本地文件加载，避免网络检查
-                self.model = whisper.load_model(str(model_path))
-            else:
-                # 使用download_root参数确保下载到指定目录
-                self.model = whisper.load_model(model_name, download_root=str(models_dir))
-            
-            if model_exists:
+                
+                # 直接从本地文件加载，完全避免网络检查
+                import torch
+                checkpoint = torch.load(str(model_path), map_location="cpu")
+                
+                # 手动构建模型对象，避免 whisper.load_model 的网络检查
+                import whisper.model
+                dims = whisper.model.ModelDimensions(**checkpoint["dims"])
+                model_instance = whisper.model.Whisper(dims)
+                model_instance.load_state_dict(checkpoint["model_state_dict"])
+                
+                # 设置为评估模式
+                model_instance.eval()
+                self.model = model_instance
+                
                 logger.info(f"✅ 本地Whisper模型加载成功: {model_name}")
             else:
+                logger.warning(f"⚠️ 模型文件不存在: {model_path}")
+                logger.info(f"正在下载Whisper模型: {model_name} (约800MB，请稍候...)")
+                # 使用download_root参数确保下载到指定目录
+                self.model = whisper.load_model(model_name, download_root=str(models_dir))
                 logger.info(f"✅ Whisper模型下载并加载成功: {model_name}")
                 logger.info(f"📁 模型已保存到: {models_dir}")
             
         except Exception as e:
-            logger.error(f"加载Whisper模型失败: {e}")
-            raise
+            logger.error(f"直接加载模型失败，尝试使用whisper.load_model: {e}")
+            try:
+                # 回退到标准方法
+                model_name = self.config.get('voice_recognition', 'model', fallback='tiny')
+                self.model = whisper.load_model(model_name)
+                logger.info(f"✅ 使用标准方法加载模型成功: {model_name}")
+            except Exception as e2:
+                logger.error(f"加载Whisper模型完全失败: {e2}")
+                raise
             
     def set_callback(self, callback: Callable[[str], None]):
         """设置识别结果回调函数"""
@@ -240,13 +253,16 @@ class VoiceRecognizer:
                 task='transcribe',
                 temperature=0.0,  # 降低随机性
                 compression_ratio_threshold=2.0,  # 较低的压缩比阈值
-                logprob_threshold=-0.8,  # 较低的概率阈值
-                no_speech_threshold=0.3,  # 较低的无语音阈值
+                logprob_threshold=-1.0,  # 更宽松的概率阈值，减少计算
+                no_speech_threshold=0.6,  # 提高无语音阈值，快速跳过静音
                 fp16=False,  # 禁用FP16以避免某些设备的兼容性问题
                 beam_size=1,  # 使用贪心搜索提高速度
                 best_of=1,  # 只生成一个候选
                 condition_on_previous_text=False,  # 不依赖之前的文本
-                word_timestamps=False  # 不生成词级时间戳
+                word_timestamps=False,  # 不生成词级时间戳
+                without_timestamps=True,  # 不生成任何时间戳，进一步提速
+                initial_prompt=None,  # 不使用初始提示
+                verbose=False  # 关闭详细输出
             )
             
             text = result.get('text', '').strip()
@@ -380,11 +396,11 @@ class ContinuousVoiceRecognizer(VoiceRecognizer):
         self.auto_recording_duration = float(self.config.get('voice_recognition', 'auto_recording_duration', fallback=2.5))
         self.cooldown_time = float(self.config.get('voice_recognition', 'cooldown_time', fallback=0.3))
         
-        # 动态录音参数
+        # 动态录音参数 - 优化延迟
         self.dynamic_recording = self.config.get('voice_recognition', 'dynamic_recording', fallback=True)
-        self.min_recording_duration = 0.5  # 最小录音时长
-        self.max_recording_duration = min(self.auto_recording_duration, 10.0)  # 最大录音时长
-        self.silence_duration_to_stop = 0.8  # 静音多久后停止录音
+        self.min_recording_duration = 0.3  # 最小录音时长（减少到0.3秒）
+        self.max_recording_duration = min(self.auto_recording_duration, 8.0)  # 最大录音时长
+        self.silence_duration_to_stop = 0.5  # 静音多久后停止录音（减少到0.5秒）
         
         logger.info(f"连续识别参数 - VAD阈值: {self.vad_threshold:.3f}, 动态录音: {self.dynamic_recording}")
         if self.dynamic_recording:

@@ -96,27 +96,30 @@ def safe_input(prompt, default_response='n'):
         return default_response
 
 def install_whisper_model():
-    """安装Whisper模型"""
+    """检查Whisper模型，跳过下载以加快启动"""
     try:
         print("检查Whisper模型...")
-        import whisper
         
-        # 尝试加载基础模型
-        model = whisper.load_model("base")
-        print("Whisper基础模型已准备就绪")
-        return True
+        # 检查本地模型文件是否存在
+        from pathlib import Path
+        models_dir = Path(__file__).parent / "models"
+        
+        # 检查常用模型文件
+        model_files = ['tiny.pt', 'base.pt', 'turbo.pt', 'large-v3-turbo.pt']
+        existing_models = [f for f in model_files if (models_dir / f).exists()]
+        
+        if existing_models:
+            print(f"发现本地模型文件: {', '.join(existing_models)}")
+            print("✅ 跳过模型下载，直接启动")
+            return True
+        else:
+            print("未发现本地模型文件，需要下载...")
+            return False
         
     except Exception as e:
-        print(f"Whisper模型加载失败: {e}")
-        print("正在下载Whisper基础模型...")
-        try:
-            import whisper
-            whisper.load_model("base")
-            print("Whisper基础模型下载完成")
-            return True
-        except Exception as e2:
-            print(f"Whisper模型下载失败: {e2}")
-            return False
+        print(f"模型检查失败: {e}")
+        # 继续启动，让程序自己处理
+        return True
 
 def create_directories():
     """创建必需的目录"""
